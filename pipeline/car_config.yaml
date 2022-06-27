@@ -1,0 +1,23 @@
+samples: samples.csv
+
+units: units.csv
+
+filters_base: /t1-data/user/rbeagrie/projects/cutandrun_processing/pipeline/filters
+
+bowtie2_index:
+    mm9: /t1-data/user/rbeagrie/genomes/mm9+sacCer3+eColi/bowtie2_indexes/genome
+    mm10: /t1-data/user/rbeagrie/genomes/mm10+sacCer3+eColi/bowtie2_indexes/genome
+
+genome_fasta:
+    mm9: /t1-data/user/rbeagrie/genomes/mm9+sacCer3+eColi/mm9+sacCer3+eColi.fa
+    mm10: /t1-data/user/rbeagrie/genomes/mm10+sacCer3+eColi/mm10+sacCer3+eColi.fa
+
+bowtie_opts: "--no-unal -X 1500 --no-mixed --no-discordant"
+
+index_extensions:
+    - ".1.bt2"
+    - ".2.bt2"
+    - ".3.bt2"
+    - ".4.bt2"
+    - ".rev.1.bt2"
+    - ".rev.2.bt2"

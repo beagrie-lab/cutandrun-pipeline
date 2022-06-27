@@ -1,0 +1,117 @@
+import pandas as pd
+
+configfile: "car_config.yaml"
+
+samples = pd.read_csv(config["samples"]).set_index(
+    "sample_id", drop=False).astype({
+      'notes':str})
+
+units = pd.read_csv(config["units"])
+
+def get_r1_fastqs(wildcards):
+    return units.loc[units.sample_id==wildcards.sample, "fq1"].tolist()
+
+def get_r2_fastqs(wildcards):
+    return units.loc[units.sample_id==wildcards.sample, "fq2"].tolist()
+
+def get_read_string(wildcards, input):
+    r1_str = ','.join(input["r1_fastqs"])
+    r2_str = ','.join(input["r2_fastqs"])
+    return '-1 {r1} -2 {r2}'.format(r1=r1_str, r2=r2_str)
+
+def get_bowtie2_index_base(wildcards):
+    return config["bowtie2_index"][wildcards.genome]
+
+def get_bowtie2_index_files(wildcards):
+    return expand(config["bowtie2_index"][wildcards.genome] + '{ext}', ext=config["index_extensions"])
+
+def get_genome_fasta(wildcards):
+    return config["genome_fasta"][wildcards.genome]
+
+def get_filter_files(wildcards):
+    notes = samples.loc[wildcards.sample, "notes"].split(';')
+    contam_regions = [note[7:] for note in notes if note[:7]=='contam_']
+    contam_regions.append('blacklist')
+    bed_files = [os.path.join(
+        config["filters_base"],
+        wildcards.genome,
+        '{}.bed'.format(region))
+    for region in contam_regions]
+
+    return bed_files
+
+rule all:
+    input:
+        expand("{sample}/scaled_bigwigs/{sample}.{genome}.bw",
+            sample=samples.sample_id.tolist(), genome=['mm9', 'mm10'])
+
+rule bowtie2_map:
+    input:
+        r1_fastqs=get_r1_fastqs,
+        r2_fastqs=get_r2_fastqs,
+        index=get_bowtie2_index_files,
+    params:
+        read_str=get_read_string,
+        index=get_bowtie2_index_base,
+        bowtie_opts=config["bowtie_opts"]
+    log:
+        "{sample}/logs/bowtie2_mapping.{genome}.log"
+    envmodules:
+        "samtools/1.10",
+        "bowtie2/2.4.1"
+    output:
+        temp("{sample}/mapped_reads/initial/{sample}.{genome}.bam")
+    shell:
+        "bowtie2 -x {params.index} {params.read_str} {params.bowtie_opts} "
+        "2> {log} | samtools fixmate -m - - | samtools sort > {output}"
+
+rule dedup:
+    input:
+        bamfile="{sample}/mapped_reads/initial/{sample}.{genome}.bam"
+    output:
+        temp("{sample}/mapped_reads/rmdup/{sample}.{genome}.bam")
+    envmodules:
+        "samtools/1.10",
+    log:
+        "{sample}/logs/pcr_duplicates.{genome}.log"
+    shell:
+        "samtools markdup -r -f {log} {input} {output}"
+
+rule filter_and_cram:
+    input:
+        bamfile="{sample}/mapped_reads/rmdup/{sample}.{genome}.bam",
+        filter_files=get_filter_files,
+        fasta=get_genome_fasta
+    output:
+        "{sample}/mapped_reads/{sample}.{genome}.cram"
+    envmodules:
+        "bedtools/2.29.2",
+        "samtools/1.10"
+    shell:
+        "bedtools intersect -ubam -v -abam {input.bamfile} "
+        "-b {input.filter_files} | "
+        "samtools view -f 3 -T {input.fasta} -C > {output}"
+
+rule index_cramfile:
+    input:
+        cramfile="{sample}/mapped_reads/{sample}.{genome}.cram"
+    output:
+        "{sample}/mapped_reads/{sample}.{genome}.cram.crai"
+    envmodules:
+        "samtools/1.10"
+    shell:
+        "samtools index {input}"
+
+rule make_scaled_bigwig:
+    input:
+        cramfile="{sample}/mapped_reads/{sample}.{genome}.cram",
+        index="{sample}/mapped_reads/{sample}.{genome}.cram.crai"
+    output:
+        "{sample}/scaled_bigwigs/{sample}.{genome}.bw"
+    envmodules:
+        "python-cbrg/current",
+        "samtools/1.10"
+    shell:
+        "samtools view -c {input.cramfile} chr_ecoli | "
+        "python -c 'import sys; print(1000 / float(sys.stdin.read().strip()))' | "
+        "xargs bamCoverage -bs 5 -e -b {input.cramfile} -o {output} --scaleFactor "
